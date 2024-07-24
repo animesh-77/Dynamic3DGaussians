@@ -10,17 +10,23 @@ from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from helpers import setup_camera, l1_loss_v1, l1_loss_v2, weighted_l2_loss_v1, weighted_l2_loss_v2, quat_mult, \
     o3d_knn, params2rendervar, params2cpu, save_params
 from external import calc_ssim, calc_psnr, build_rotation, densify, update_params_and_optimizer
+from typing import Tuple
 
 
-def get_dataset(t, md, seq):
+def get_dataset(t:int, meta_data:dict, seq: str, data_folder: str= "."):
+    """
+    
+    """
     dataset = []
-    for c in range(len(md['fn'][t])):
-        w, h, k, w2c = md['w'], md['h'], md['k'][t][c], md['w2c'][t][c]
+    for c in range(len(meta_data['fn'][t])):
+        w, h, k, w2c = meta_data['w'], meta_data['h'], meta_data['k'][t][c], meta_data['w2c'][t][c]
         cam = setup_camera(w, h, k, w2c, near=1.0, far=100)
-        fn = md['fn'][t][c]
-        im = np.array(copy.deepcopy(Image.open(f"./data/{seq}/ims/{fn}")))
+        fn = meta_data['fn'][t][c]
+        im = np.array(copy.deepcopy(Image.open(f"{data_folder}/data/{seq}/ims/{fn.replace('.png', '.JPG')}")))
         im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
-        seg = np.array(copy.deepcopy(Image.open(f"./data/{seq}/seg/{fn.replace('.jpg', '.png')}"))).astype(np.float32)
+        # make seg as sasme size as im and all 1
+        # seg= torch.ones_like(im[0], device="cuda")
+        seg = np.array(copy.deepcopy(Image.open(f"{data_folder}/data/{seq}/seg/{fn.replace('.JPG', '.png')}"))).astype(np.float32)
         seg = torch.tensor(seg).float().cuda()
         seg_col = torch.stack((seg, torch.zeros_like(seg), 1 - seg))
         dataset.append({'cam': cam, 'im': im, 'seg': seg_col, 'id': c})
@@ -28,14 +34,34 @@ def get_dataset(t, md, seq):
 
 
 def get_batch(todo_dataset, dataset):
+    """
+    Retrieves a batch of data from the given dataset.
+
+    Parameters:
+    - todo_dataset (list): A list of data samples that are yet to be processed.
+    - dataset (list): The complete dataset containing all the data samples.
+
+    Returns:
+    - curr_data: A randomly selected data sample from the todo_dataset.
+
+    """
     if not todo_dataset:
         todo_dataset = dataset.copy()
     curr_data = todo_dataset.pop(randint(0, len(todo_dataset) - 1))
     return curr_data
 
 
-def initialize_params(seq, md):
-    init_pt_cld = np.load(f"./data/{seq}/init_pt_cld.npz")["data"]
+def initialize_params(seq: str, md: dict, data_folder: str= ".")-> Tuple[dict, dict]:
+    """
+    Read the initial point cloud .npz file and initialize the parameters and variables for optimization
+    :param seq: sequence name
+    :param md: metadata 
+    :param data_folder: path to the dataset
+
+    :return: params, variables
+    """
+    init_pt_cld = np.load(f"{data_folder}/data/{seq}/init_pt_cld.npz")["data"]
+    # the .npz file has just one numyp array named "data" 
     seg = init_pt_cld[:, 6]
     max_cams = 50
     sq_dist, _ = o3d_knn(init_pt_cld[:, :3], 3)
@@ -50,7 +76,7 @@ def initialize_params(seq, md):
         'cam_m': np.zeros((max_cams, 3)),
         'cam_c': np.zeros((max_cams, 3)),
     }
-    params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
+    params = {key: torch.nn.Parameter(torch.tensor(value).cuda().float().contiguous().requires_grad_(True)) for key, value in
               params.items()}
     cam_centers = np.linalg.inv(md['w2c'][0])[:, :3, 3]  # Get scene radius
     scene_radius = 1.1 * np.max(np.linalg.norm(cam_centers - np.mean(cam_centers, 0)[None], axis=-1))
@@ -61,7 +87,10 @@ def initialize_params(seq, md):
     return params, variables
 
 
-def initialize_optimizer(params, variables):
+def initialize_optimizer(params: dict, variables: dict)-> torch.optim.Optimizer: # Optimizer is parent of all optimizers even adam. can also write torch.optim.Adam here
+    """
+    Initialize the optimizer with the parameters and differnt learning rates
+    """
     lrs = {
         'means3D': 0.00016 * variables['scene_radius'],
         'rgb_colors': 0.0025,
@@ -128,8 +157,8 @@ def get_loss(params, curr_data, variables, is_initial_timestep):
     return loss, variables
 
 
-def initialize_per_timestep(params, variables, optimizer):
-    pts = params['means3D']
+def initialize_per_timestep(params: dict, variables: dict, optimizer: torch.optim.Optimizer)-> Tuple[dict, dict]:
+    pts: np.ndarray = params['means3D'] 
     rot = torch.nn.functional.normalize(params['unnorm_rotations'])
     new_pts = pts + (pts - variables["prev_pts"])
     new_rot = torch.nn.functional.normalize(rot + (rot - variables["prev_rot"]))
@@ -175,6 +204,12 @@ def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
 
 
 def report_progress(params, data, i, progress_bar, every_i=100):
+    """
+    Update tqdm progress bar with 
+    1. PSNR of the first image in the training dataset
+    2. :TODO: Add more metrics like SSIM and LPIPS
+    3. :TODO: Add a frame comparison metric as well
+    """
     if i % every_i == 0:
         im, _, _, = Renderer(raster_settings=data['cam'])(**params2rendervar(params))
         curr_id = data['id']
@@ -184,17 +219,23 @@ def report_progress(params, data, i, progress_bar, every_i=100):
         progress_bar.update(every_i)
 
 
-def train(seq, exp):
-    if os.path.exists(f"./output/{exp}/{seq}"):
+def train(seq:str, exp: str, data_folder: str= ".")-> None:
+    if os.path.exists(f"./output/{exp}/{seq}"): # need to change this
         print(f"Experiment '{exp}' for sequence '{seq}' already exists. Exiting.")
         return
-    md = json.load(open(f"./data/{seq}/train_meta.json", 'r'))  # metadata
-    num_timesteps = len(md['fn'])
-    params, variables = initialize_params(seq, md)
+    meta_data : dict= json.load(open(f"{data_folder}/data/{seq}/train_meta.json", 'r'))  
+    # metadata
+    # w : int
+    # h : int
+    # k : 150 frames, 4 cameras, 3, 3) 3x3 intrinsic matrix
+    # w2c: (150 frames, 4 cameras, 4, 4) 4x4 extrinsic matrix
+    # fn: (150 frames, 4 filenames of frames from 4 cameras)
+    num_timesteps = len(meta_data['fn'])
+    params, variables = initialize_params(seq, meta_data, data_folder)
     optimizer = initialize_optimizer(params, variables)
     output_params = []
     for t in range(num_timesteps):
-        dataset = get_dataset(t, md, seq)
+        dataset = get_dataset(t, meta_data, seq, data_folder)
         todo_dataset = []
         is_initial_timestep = (t == 0)
         if not is_initial_timestep:
@@ -208,6 +249,7 @@ def train(seq, exp):
             with torch.no_grad():
                 report_progress(params, dataset[0], i, progress_bar)
                 if is_initial_timestep:
+                    # pass
                     params, variables = densify(params, variables, optimizer, i)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -215,11 +257,15 @@ def train(seq, exp):
         output_params.append(params2cpu(params, is_initial_timestep))
         if is_initial_timestep:
             variables = initialize_post_first_timestep(params, variables, optimizer)
-    save_params(output_params, seq, exp)
+            save_params(output_params, seq, exp, data_folder, is_initial_timestep=True)
+    save_params(output_params, seq, exp, data_folder)
 
 
 if __name__ == "__main__":
     exp_name = "exp1"
-    for sequence in ["basketball", "boxes", "football", "juggle", "softball", "tennis"]:
-        train(sequence, exp_name)
+    data_folder= "/cs/student/projects4/ml/2023/asrivast/datasets/dynamic_3DGS"
+    print(f"results will be stored in {data_folder}/output/{exp_name}")
+    for sequence in ["portsmouth",]: #"boxes", "football", "juggle", "softball", "tennis"]:
+        train(sequence, exp_name, data_folder)
         torch.cuda.empty_cache()
+    print(f"results will be stored in {data_folder}/output/{exp_name}")

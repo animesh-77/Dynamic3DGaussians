@@ -1,3 +1,4 @@
+from typing import Tuple
 import torch
 import os
 import open3d as o3d
@@ -26,7 +27,8 @@ def setup_camera(w, h, k, w2c, near=0.01, far=100):
         projmatrix=full_proj,
         sh_degree=0,
         campos=cam_center,
-        prefiltered=False
+        prefiltered=False,
+        debug=False,
     )
     return cam
 
@@ -69,7 +71,21 @@ def quat_mult(q1, q2):
     return torch.stack([w, x, y, z]).T
 
 
-def o3d_knn(pts, num_knn):
+# def o3d_knn(pts, num_knn):
+def o3d_knn(pts: np.ndarray, num_knn: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Computes the k-nearest neighbors (k-NN) of a set of points using Open3D library.
+
+    Args:
+        pts: An array of shape (N, 3) representing the 3D points.
+        num_knn: The number of nearest neighbors to compute.
+
+    Returns:
+        A tuple containing two arrays:
+        - sq_dists: An array of shape (N, num_knn) representing the squared distances to the nearest neighbors.
+        - indices: An array of shape (N, num_knn) representing the indices of the nearest neighbors.
+
+    """
     indices = []
     sq_dists = []
     pcd = o3d.geometry.PointCloud()
@@ -91,12 +107,14 @@ def params2cpu(params, is_initial_timestep):
     return res
 
 
-def save_params(output_params, seq, exp):
+def save_params(output_params, seq, exp, data_folder:str= ".", is_initial_timestep=False):
     to_save = {}
     for k in output_params[0].keys():
         if k in output_params[1].keys():
             to_save[k] = np.stack([params[k] for params in output_params])
         else:
             to_save[k] = output_params[0][k]
-    os.makedirs(f"./output/{exp}/{seq}", exist_ok=True)
-    np.savez(f"./output/{exp}/{seq}/params", **to_save)
+    os.makedirs(f"{data_folder}/output/{exp}/{seq}", exist_ok=True)
+    postfix= "0" if is_initial_timestep else ""
+    np.savez(f"{data_folder}/output/{exp}/{seq}/params{postfix}", **to_save)
+    print(f"Saved to {data_folder}/output/{exp}/{seq}/params.npz")
