@@ -13,15 +13,22 @@ from external import calc_ssim, calc_psnr, build_rotation, densify, update_param
 from typing import Tuple
 
 
-def get_dataset(t:int, meta_data:dict, seq: str, data_folder: str= "."):
+def get_dataset(time_step:int, meta_data:dict, seq: str, data_folder: str= ".")-> list:
     """
-    
+    t: timestep
+
+    Returns:
+    - dataset: A list of data samples for the given timestep.
+    [
+    [cam, im, seg, id]
+    [cam, im, seg, id]
+    ]
     """
     dataset = []
-    for c in range(len(meta_data['fn'][t])):
-        w, h, k, w2c = meta_data['w'], meta_data['h'], meta_data['k'][t][c], meta_data['w2c'][t][c]
+    for cam_idx in range(len(meta_data['fn'][time_step])):
+        w, h, k, w2c = meta_data['w'], meta_data['h'], meta_data['k'][time_step][cam_idx], meta_data['w2c'][time_step][cam_idx]
         cam = setup_camera(w, h, k, w2c, near=1.0, far=100)
-        fn = meta_data['fn'][t][c]
+        fn = meta_data['fn'][time_step][cam_idx]
         im = np.array(copy.deepcopy(Image.open(f"{data_folder}/data/{seq}/ims/{fn.replace('.png', '.JPG')}")))
         im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
         # make seg as sasme size as im and all 1
@@ -29,7 +36,7 @@ def get_dataset(t:int, meta_data:dict, seq: str, data_folder: str= "."):
         seg = np.array(copy.deepcopy(Image.open(f"{data_folder}/data/{seq}/seg/{fn.replace('.JPG', '.png')}"))).astype(np.float32)
         seg = torch.tensor(seg).float().cuda()
         seg_col = torch.stack((seg, torch.zeros_like(seg), 1 - seg))
-        dataset.append({'cam': cam, 'im': im, 'seg': seg_col, 'id': c})
+        dataset.append({'cam': cam, 'im': im, 'seg': seg_col, 'id': cam_idx})
     return dataset
 
 
@@ -229,7 +236,8 @@ def train(seq:str, exp: str, data_folder: str= ".")-> None:
     # h : int
     # k : 150 frames, 4 cameras, 3, 3) 3x3 intrinsic matrix
     # w2c: (150 frames, 4 cameras, 4, 4) 4x4 extrinsic matrix
-    # fn: (150 frames, 4 filenames of frames from 4 cameras)
+    # fn: (150 frames, 4 filename path of frames from 4 cameras)
+    # cam: (150 frames, 4 camera ids)
     num_timesteps = len(meta_data['fn'])
     params, variables = initialize_params(seq, meta_data, data_folder)
     optimizer = initialize_optimizer(params, variables)
@@ -240,7 +248,7 @@ def train(seq:str, exp: str, data_folder: str= ".")-> None:
         is_initial_timestep = (t == 0)
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
-        num_iter_per_timestep = 10000 if is_initial_timestep else 2000
+        num_iter_per_timestep = 10000 if is_initial_timestep else 1000
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)
@@ -257,15 +265,17 @@ def train(seq:str, exp: str, data_folder: str= ".")-> None:
         output_params.append(params2cpu(params, is_initial_timestep))
         if is_initial_timestep:
             variables = initialize_post_first_timestep(params, variables, optimizer)
-            save_params(output_params, seq, exp, data_folder, is_initial_timestep=True)
+            # save_params(output_params, seq, exp, data_folder, is_initial_timestep=True)
+        if t == 2:
+            break
     save_params(output_params, seq, exp, data_folder)
 
 
 if __name__ == "__main__":
-    exp_name = "exp1"
+    exp_name = "exp3"
     data_folder= "/cs/student/projects4/ml/2023/asrivast/datasets/dynamic_3DGS"
-    print(f"results will be stored in {data_folder}/output/{exp_name}")
     for sequence in ["portsmouth",]: #"boxes", "football", "juggle", "softball", "tennis"]:
+        print(f"results will be stored in {data_folder}/output/{exp_name}/{sequence}")
         train(sequence, exp_name, data_folder)
         torch.cuda.empty_cache()
-    print(f"results will be stored in {data_folder}/output/{exp_name}")
+        print(f"results will be stored in {data_folder}/output/{exp_name}/{sequence}")

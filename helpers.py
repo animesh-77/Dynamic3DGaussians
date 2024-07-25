@@ -107,7 +107,13 @@ def params2cpu(params, is_initial_timestep):
     return res
 
 
-def save_params(output_params, seq, exp, data_folder:str= ".", is_initial_timestep=False):
+def save_params(output_params: list, seq: str, exp: str, data_folder:str= ".", is_initial_timestep: bool=False):
+    """
+    ouput_params: list of n (total frames) dictionaries containing the parameters to save
+        means3D: (N, 3)
+        rgb_colors: (N, 3)
+        unnorm_rotations: (N, 4)
+    """
     to_save = {}
     for k in output_params[0].keys():
         if k in output_params[1].keys():
